@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ settings.app_name }} &middot; Masuk</title>
+  <link rel="stylesheet" href="/static/style.css?v=20260914k">
+  <style>
+    .login-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--bg)}
+    .login-box{width:340px;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:26px 24px}
+    .login-box h1{font-size:18px;margin:0 0 4px}
+    .login-box p{margin:0 0 18px}
+    .login-box label{margin-bottom:12px}
+    .login-box input{width:100%}
+    .login-box .btn{width:100%;margin-top:6px}
+  </style>
+</head>
+<body>
+<div class="login-wrap">
+  <form class="login-box" id="formLogin">
+    <h1>&#128225; {{ settings.app_name }}</h1>
+    <p class="muted">Monitoring ONU &amp; Kontrol Mikrotik</p>
+    <label>Nama pengguna <input id="lUser" autocomplete="username" autofocus></label>
+    <label>Password <input id="lPass" type="password" autocomplete="current-password"></label>
+    <button class="btn primary" type="submit">Masuk</button>
+    <p class="muted" id="lErr" style="margin:10px 0 0;color:var(--bad)"></p>
+  </form>
+</div>
+<script>
+document.getElementById('formLogin').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const err = document.getElementById('lErr');
+  err.textContent = '';
+  const res = await fetch('/api/login', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      username: document.getElementById('lUser').value.trim(),
+      password: document.getElementById('lPass').value,
+    }),
+  });
+  if (res.ok) { window.location.href = '/'; return; }
+  let d = {}; try { d = await res.json(); } catch (x) {}
+  err.textContent = d.error || 'Gagal masuk';
+});
+</script>
+</body>
+</html>

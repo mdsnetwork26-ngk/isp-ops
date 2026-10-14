@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ settings.app_name }} &middot; {% block judul %}Monitoring{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css?v=20260914k">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>&#128225;</text></svg>">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">&#128225;</span>
+    <div>
+      <strong>{{ settings.app_name }}</strong>
+      <small>Monitoring ONU &amp; Kontrol Mikrotik</small>
+    </div>
+  </div>
+  <nav>
+    <a href="/" class="{{ 'aktif' if page == 'monitor' }}">Monitoring</a>
+    {% if role == 'admin' %}
+    <a href="/pengaturan" class="{{ 'aktif' if page == 'pengaturan' }}">Pengaturan</a>
+    <a href="/log" class="{{ 'aktif' if page == 'log' }}">Log Aksi</a>
+    {% endif %}
+  </nav>
+  <div class="userbox">
+    {% if settings.demo_mode %}<span class="badge demo">DEMO</span>{% endif %}
+    <span class="muted">{{ user }}{% if role != "admin" %} · teknisi{% endif %}</span>
+    {% if settings.auth_password %}<button id="btnLogout" class="btn mini">Keluar</button>{% endif %}
+  </div>
+</header>
+<main>
+  {% block isi %}{% endblock %}
+</main>
+<!-- popup tambah pppoe (dipakai halaman monitoring & pengaturan) -->
+<div class="modal" id="modalPppoe">
+  <div class="modal-box">
+    <div class="modal-head">
+      <strong>Tambah user PPPoE</strong>
+      <button class="x" data-tutup>&times;</button>
+    </div>
+    <div class="modal-body">
+      <label>Router <select id="pRouter"></select></label>
+      <label>Nama PPPoE <input id="pNama" placeholder="mis. pelanggan-baru"></label>
+      <label>Password <input id="pPass" type="text" placeholder="password PPPoE"></label>
+      <label>Profile <select id="pProfile"><option>default</option></select></label>
+      <div class="row" style="justify-content:flex-end">
+        <button class="btn" data-tutup>Batal</button>
+        <button id="pSimpan" class="btn primary">Simpan ke mikrotik</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast"></div>
+<script src="/static/app.js?v=20260921a"></script>
+{% block skrip %}{% endblock %}
+</body>
+</html>

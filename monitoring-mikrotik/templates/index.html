@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block judul %}Monitoring{% endblock %}
+{% block isi %}
+<section class="panel">
+  <div class="panel-head">
+    <div class="row">
+      <label class="muted">Router</label>
+      <select id="pilihRouter"><option value="">Semua router</option></select>
+      <button id="btnRefresh" class="btn" title="Ambil data sekarang">&#8635; Refresh</button>
+      <button id="btnPppoe" class="btn primary" title="Tambah user PPPoE baru di mikrotik">+ Tambah PPPoE</button>
+      <label class="chk"><input type="checkbox" id="autoRefresh" checked> Auto <input id="interval" type="number" min="2" max="120" value="10" style="width:52px"> dtk</label>
+      <label class="chk">Baris
+        <select id="limit" style="width:96px">
+          <option value="50">50</option>
+          <option value="100" selected>100</option>
+          <option value="250">250</option>
+          <option value="500">500</option>
+          <option value="0">Semua</option>
+        </select>
+      </label>
+    </div>
+    <div class="row">
+      <input id="cari" type="search" placeholder="Cari nama / IP / MAC / HP / alamat...">
+      <div class="tabs">
+        <button data-filter="all" class="tab aktif">Semua</button>
+        <button data-filter="up" class="tab">Up</button>
+        <button data-filter="down" class="tab">Down</button>
+        <button data-filter="isolated" class="tab">Isolir</button>
+      </div>
+    </div>
+  </div>
+  <div id="routerCards" class="cards"></div>
+</section>
+
+<section class="panel">
+  <div class="table-wrap">
+    <table class="grid" id="tabel">
+      <thead>
+        <tr>
+          <th>Pelanggan / PPPoE</th>
+          <th>IP</th>
+          <th class="col-iface">Interface</th>
+          <th class="col-uptime">Uptime</th>
+          <th>Status</th>
+          <th class="kanan">Aksi</th>
+        </tr>
+      </thead>
+      <tbody id="tbody">
+        <tr><td colspan="6" class="kosong">Mengambil data dari mikrotik...</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="panel-foot">
+    <span id="infoUpdate" class="muted">-</span>
+    <span id="infoBilling" class="muted"></span>
+  </div>
+</section>
+
+<!-- popup detail pelanggan -->
+<div class="modal" id="modalDetail">
+  <div class="modal-box">
+    <div class="modal-head">
+      <strong id="dJudul">Detail pelanggan</strong>
+      <button class="x" data-tutup>&times;</button>
+    </div>
+    <div class="modal-body" id="dIsi"></div>
+  </div>
+</div>
+
+<!-- popup konfirmasi -->
+<div class="modal" id="modalKonfirmasi">
+  <div class="modal-box">
+    <div class="modal-head"><strong id="kJudul">Konfirmasi</strong><button class="x" data-tutup>&times;</button></div>
+    <div class="modal-body">
+      <p id="kTeks"></p>
+      <label class="muted">Alasan / catatan</label>
+      <input id="kAlasan" type="text" value="belum bayar" style="width:100%">
+      <div class="row kanan-row" style="margin-top:14px">
+        <button class="btn" data-tutup>Batal</button>
+        <button id="kOk" class="btn danger">Ya, isolir</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

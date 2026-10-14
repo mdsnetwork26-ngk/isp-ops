@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+{% block judul %}Pengaturan{% endblock %}
+{% block isi %}
+<section class="panel">
+  <div class="panel-head">
+    <strong>Router Mikrotik</strong>
+    <button class="btn primary" id="btnRouterBaru">+ Tambah router</button>
+  </div>
+  <div class="table-wrap">
+    <table class="grid">
+      <thead>
+        <tr><th>Nama</th><th>Host:Port</th><th>User</th><th>Lokasi</th><th>Interval</th><th>Status</th><th class="kanan">Aksi</th></tr>
+      </thead>
+      <tbody id="tbodyRouter"><tr><td colspan="7" class="kosong">Memuat...</td></tr></tbody>
+    </table>
+  </div>
+  <div class="panel-foot muted">
+    Disarankan: buat user khusus di mikrotik (grup <code>api</code> + write) dan batasi IP server ini lewat
+    <code>/ip firewall filter</code>. Lihat <code>README.md</code> bagian Persiapan Mikrotik.
+  </div>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <div class="row">
+      <strong>Data pelanggan</strong>
+      <select id="filterRouter"></select>
+    </div>
+    <div class="row">
+      <button class="btn" id="btnSync">Sinkron dari mikrotik (PPP secret)</button>
+      <button class="btn primary" id="btnCustBaru">+ Tambah PPPoE</button>
+    </div>
+  </div>
+  <div class="table-wrap">
+    <table class="grid">
+      <thead>
+        <tr><th>PPPoE</th><th>Nama pelanggan</th><th>HP</th><th>IP terakhir</th><th>MAC</th><th>IP router</th><th>Kode tagihan</th><th class="kanan">Aksi</th></tr>
+      </thead>
+      <tbody id="tbodyCust"><tr><td colspan="9" class="kosong">Memuat...</td></tr></tbody>
+    </table>
+  </div>
+</section>
+
+<section class="panel">
+  <div class="panel-head"><strong>Konfigurasi aktif</strong></div>
+  <div class="kv">
+    <div><span class="muted">Address-list isolir</span><code>{{ settings.isolir_list }}</code></div>
+    <div><span class="muted">Komentar rule firewall</span><code>{{ settings.isolir_rule_comment }}</code></div>
+    <div><span class="muted">Aksi firewall</span><code>{{ settings.isolir_action }}</code></div>
+    <div><span class="muted">Disable PPP secret saat isolir</span><code>{{ 'ya' if settings.isolir_disable_secret else 'tidak' }}</code></div>
+    <div><span class="muted">Putus sesi aktif saat isolir</span><code>{{ 'ya' if settings.isolir_kick_active else 'tidak' }}</code></div>
+    <div><span class="muted">Port API mikrotik</span><code>{{ settings.api_port }}</code></div>
+    <div><span class="muted">Fallback SSH</span><code>{{ 'aktif' if settings.ssh_fallback else 'nonaktif' }}</code></div>
+    <div><span class="muted">Integrasi tagihan otomatis</span><code>{{ 'aktif' if settings.billing_enabled else 'nonaktif (manual)' }}</code></div>
+  </div>
+  <div class="panel-foot muted">Semua nilai di atas diubah lewat file <code>.env</code> lalu restart service.</div>
+</section>
+
+<div class="modal" id="modalRouter">
+  <div class="modal-box">
+    <div class="modal-head"><strong id="rJudul">Router</strong><button class="x" data-tutup>&times;</button></div>
+    <div class="modal-body">
+      <input type="hidden" id="rId">
+      <label>Nama <input id="rNama" placeholder="mis. Mikrotik-Desa-Suko"></label>
+      <label>Host / IP API <input id="rHost" placeholder="mis. 10.10.10.1"></label>
+      <div class="row">
+        <label>Port API <input id="rPort" type="number" value="8728" style="width:100px"></label>
+        <label>Interval pantau (dtk) <input id="rInterval" type="number" value="5" style="width:100px"></label>
+      </div>
+      <label>Username <input id="rUser" placeholder="ispops"></label>
+      <label>Password <input id="rPass" type="password" placeholder="kosongkan bila tidak diubah"></label>
+      <label>IP manajemen (webfig) <input id="rManage" placeholder="mis. 10.10.10.1 (untuk tombol Remote Router)"></label>
+      <label>Koneksi API
+        <select id="rSsl">
+          <option value="auto">Otomatis (TLS kalau port 8729)</option>
+          <option value="no">API polos / tanpa TLS</option>
+          <option value="yes">Paksa TLS (api-ssl)</option>
+        </select>
+      </label>
+      <p class="muted" style="margin:-4px 0 8px">Pilih <b>API polos</b> bila di mikrotik service <code>api</code> dipindah ke port 8729 (lihat <code>/ip service print</code>: baris <code>api</code> ber-PORT 8729 dan <code>api-ssl</code> invalid).</p>
+      <label>Lokasi <input id="rSite" placeholder="mis. POP Suko"></label>
+      <label class="chk"><input type="checkbox" id="rEnabled" checked> Aktif dipantau</label>
+      <div class="row kanan-row" style="margin-top:14px">
+        <button class="btn" data-tutup>Batal</button>
+        <button class="btn primary" id="rSimpan">Simpan</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="modalCust">
+  <div class="modal-box">
+    <div class="modal-head"><strong id="cJudul">Pelanggan</strong><button class="x" data-tutup>&times;</button></div>
+    <div class="modal-body">
+      <input type="hidden" id="cId">
+      <label>Router <select id="cRouter"></select></label>
+      <label>Nama PPPoE (harus sama dengan di mikrotik) <input id="cNama" placeholder="mis. budi-santoso"></label>
+      <label>Nama pelanggan <input id="cFull"></label>
+      <div class="row">
+        <label>No. HP <input id="cPhone"></label>
+        <label>Kode di aplikasi penagihan <input id="cBilling" placeholder="opsional"></label>
+      </div>
+      <label>Alamat <input id="cAddress"></label>
+      <div class="row">
+        <label>Port remote ONU/router <input id="cOnuPort" type="number" value="80" style="width:90px"></label>
+      </div>
+      <div class="row">
+        <label>IP router pelanggan <input id="cRouterIp"></label>
+        <label>Port router <input id="cRouterPort" type="number" value="80" style="90px"></label>
+      </div>
+      <label>Catatan <input id="cNotes"></label>
+      <div class="row kanan-row" style="margin-top:14px">
+        <button class="btn" data-tutup>Batal</button>
+        <button class="btn primary" id="cSimpan">Simpan</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-head"><strong>Pengguna aplikasi</strong>
+    <span class="muted">admin: semua · teknisi: pantau + tambah klien + isolir · pemantau: lihat saja</span></div>
+  <table class="grid">
+    <thead><tr><th>Nama</th><th>Peran</th><th class="kanan">Aksi</th></tr></thead>
+    <tbody id="tbodyUser"></tbody>
+  </table>
+  <div class="panel-foot">
+    <input id="uNama" placeholder="username baru" style="width:160px">
+    <input id="uPass" placeholder="password (min 4)" style="width:160px">
+    <select id="uRole"><option value="teknisi">teknisi</option><option value="admin">admin</option><option value="pemantau">pemantau (lihat saja)</option></select>
+    <button id="btnUserSimpan" class="btn primary">Tambah pengguna</button>
+  </div>
+</div>
+<!-- popup batasan router untuk pemantau -->
+<div class="modal" id="modalUserRouter">
+  <div class="modal-box">
+    <div class="modal-head"><strong id="urJudul">Router untuk pengguna</strong><button class="x" data-tutup>&times;</button></div>
+    <div class="modal-body">
+      <p class="muted">Centang router yang boleh dilihat. Bila tidak ada yang dicentang, pemantau melihat semua router.</p>
+      <div id="urDaftar"></div>
+      <div class="row" style="justify-content:flex-end">
+        <button class="btn" data-tutup>Batal</button>
+        <button id="urSimpan" class="btn primary">Simpan</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-head"><strong>Auto-isolir pelanggan</strong>
+    <span class="muted">Isi tanggal = isolir aktif 2 hari setelah tanggal itu · kosong = langsung · khusus admin</span></div>
+  <div class="panel-foot">
+    <input id="aiCari" placeholder="cari nama PPPoE..." style="width:260px">
+    <button id="aiCariBtn" class="btn">Cari</button>
+  </div>
+  <table class="grid">
+    <thead><tr><th>PPPoE</th><th>Nama pelanggan</th><th>Router</th><th>Mode</th><th class="kanan">Aksi</th></tr></thead>
+    <tbody id="tbodyAuto"><tr><td class="kosong" colspan="5">Ketik nama PPPoE lalu klik Cari.</td></tr></tbody>
+  </table>
+</div>
+{% endblock %}

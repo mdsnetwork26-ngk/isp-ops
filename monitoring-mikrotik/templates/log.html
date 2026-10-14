@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block judul %}Log Aksi{% endblock %}
+{% block isi %}
+<section class="panel">
+  <div class="panel-head">
+    <strong>Log aksi teknisi</strong>
+    <div class="row">
+      <button class="btn" id="btnLogRefresh">&#8635; Muat ulang</button>
+      <button class="btn danger" id="btnLogClear">Hapus log</button>
+    </div>
+  </div>
+  <div class="table-wrap">
+    <table class="grid">
+      <thead><tr><th>Waktu</th><th>Teknisi</th><th>Aksi</th><th>Pelanggan</th><th>Router</th><th>Detail</th></tr></thead>
+      <tbody id="tbodyLog"><tr><td colspan="6" class="kosong">Memuat...</td></tr></tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

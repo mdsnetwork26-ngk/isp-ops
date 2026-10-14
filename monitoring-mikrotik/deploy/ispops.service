@@ -1,0 +1,26 @@
+[Unit]
+Description=ISP-OPS - Monitoring ONU & Kontrol Mikrotik
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ispops
+Group=ispops
+WorkingDirectory=/opt/isp-ops
+EnvironmentFile=-/opt/isp-ops/.env
+ExecStart=/opt/isp-ops/venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
+Restart=always
+RestartSec=3
+# --- pengaman tambahan (biarkan apa adanya) ---
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/isp-ops
+# --- hemat memori di server kecil ---
+MemoryMax=256M
+CPUQuota=60%
+
+[Install]
+WantedBy=multi-user.target
