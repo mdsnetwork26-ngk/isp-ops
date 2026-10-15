@@ -313,6 +313,12 @@ class RouterOSAPI(RouterClient):
         )
         return True
 
+    def profile_exists(self, name: str) -> bool:
+        """Cek /ppp profile by-name (lebih ringan dari print semua profil)."""
+        if not name:
+            return False
+        return bool(self._run("/ppp/profile/print", _w("?name", name)))
+
     def ensure_suspend_profile(self, profile: str, pool: str, subnet: str) -> bool:
         """Pastikan pool IP + profil PPP suspend ada di router (idempoten)."""
         dibuat = False

@@ -595,8 +595,13 @@ async def api_isolir(payload: ActionIn, request: Request):
         router_id=payload.router_id,
     )
     if not res.get("ok"):
-        status = 404 if "tidak ditemukan" in res.get("error", "") else 400
-        return JSONResponse(status_code=status, content=res)
+        # 404 hanya untuk pelanggan/router yang memang tidak ada; galat
+        # MikroTik seperti "profil suspend tidak ditemukan di router"
+        # adalah galat perintah (400), bukan data hilang.
+        err = res.get("error", "")
+        hilang = ("data pelanggan tidak ditemukan" in err
+                  or "router pelanggan tidak ditemukan" in err)
+        return JSONResponse(status_code=404 if hilang else 400, content=res)
     return res
 
 
@@ -610,8 +615,10 @@ async def api_buka(payload: ActionIn, request: Request):
         router_id=payload.router_id,
     )
     if not res.get("ok"):
-        status = 404 if "tidak ditemukan" in res.get("error", "") else 400
-        return JSONResponse(status_code=status, content=res)
+        err = res.get("error", "")
+        hilang = ("data pelanggan tidak ditemukan" in err
+                  or "router pelanggan tidak ditemukan" in err)
+        return JSONResponse(status_code=404 if hilang else 400, content=res)
     return res
 
 

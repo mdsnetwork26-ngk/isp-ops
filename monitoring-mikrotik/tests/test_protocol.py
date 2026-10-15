@@ -110,9 +110,16 @@ class FakeMikrotik:
         self.rule_isolir_ada = False
         # komentar rule firewall yang "sudah ada" (utk query ?comment=)
         self.rule_comments: set[str] = set()
-        # state mode suspend: pool IP + profil PPP + penanda tanpa sesi aktif
+        # state mode suspend: pool IP (usang) + profil PPP + tanpa sesi aktif.
+        # "SUSPEND" sengaja SUDAH ada sejak awal: meniru profil suspend
+        # yang dibuat manual oleh operator di MikroTik -- alur isolir baru
+        # wajib memakainya, bukan membuatnya sendiri.
         self.pools: dict[str, str] = {}
-        self.profiles: list[str] = ["default", "pppoe-6m", "pppoe-12m"]
+        self.profiles: list[str] = ["default", "pppoe-6m", "pppoe-12m", "SUSPEND"]
+        # profil secret yang berkeadaan: /ppp secret set profile=... harus
+        # terbaca lagi oleh print berikutnya (untuk verifikasi isolir/buka)
+        self.secret_profiles: dict[str, str] = {"budi-santoso": "pppoe-12m"}
+        self.secret_disabled: dict[str, str] = {"budi-santoso": "false"}
         # tanpa_aktif=True meniru router yang TIDAK punya sesi PPP aktif sama
         # sekali (semua pelanggan offline) -- dipakai uji isolir mode suspend.
         self.tanpa_aktif = False
@@ -264,9 +271,19 @@ class FakeMikrotik:
                     self.secrets_tambahan.append({"name": args.get("name", ""),
                                                   "password": args.get("password", ""),
                                                   "profile": args.get("profile", "")})
+                elif cmd == "/ppp/secret/set":
+                    # berkeadaan: set profile/disabled harus terbaca print lagi
+                    if args.get("profile"):
+                        self.secret_profiles["budi-santoso"] = args["profile"]
+                    if args.get("disabled"):
+                        self.secret_disabled["budi-santoso"] = (
+                            "true" if args["disabled"] == "yes" else "false"
+                        )
                 elif cmd == "/ppp/secret/print":
-                    rows = [["=.id=*7", "=name=budi-santoso", "=disabled=false",
-                             "=service=pppoe", "=profile=pppoe-12m"]]
+                    rows = [["=.id=*7", "=name=budi-santoso",
+                             f"=disabled={self.secret_disabled.get('budi-santoso', 'false')}",
+                             "=service=pppoe",
+                             f"=profile={self.secret_profiles.get('budi-santoso', 'pppoe-12m')}"]]
                     rows += [[f"=.id=*T{i}", f"=name={e['name']}", "=disabled=false",
                               "=service=pppoe", f"=profile={e.get('profile', '')}"]
                              for i, e in enumerate(self.secrets_tambahan)]

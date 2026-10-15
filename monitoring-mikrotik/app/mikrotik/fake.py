@@ -38,8 +38,10 @@ class FakeRouter(RouterClient):
         self._t0 = time.time()
         self._isolir: dict[str, str] = {}
         self._rules: list[dict] = []
-        self._pools: dict[str, str] = {}      # mode suspend: pool -> ranges
-        self._profiles: list[str] = ["default", "10M", "20M", "50M"]
+        self._pools: dict[str, str] = {}      # usang: pool mode suspend lama
+        # "SUSPEND" dianggap SUDAH dibuat manual oleh operator di MikroTik,
+        # sama seperti profil paket lain -- mode demo tidak membuatnya sendiri.
+        self._profiles: list[str] = ["default", "10M", "20M", "50M", "SUSPEND"]
         self._sessions: dict[str, dict] = {}
         self._secrets: dict[str, Secret] = {}
         rnd = random.Random(7)
@@ -95,7 +97,7 @@ class FakeRouter(RouterClient):
                 s["since"] = 0.0  # terisolir -> tetap terputus
                 continue
             sec = self._secrets.get(nama)
-            if sec and sec.profile == "SUSPENDED":
+            if sec and sec.profile == "SUSPEND":
                 s["since"] = 0.0  # mode suspend -> tidak boleh konek normal
                 continue
             if s["since"] and rnd.random() < 0.004:

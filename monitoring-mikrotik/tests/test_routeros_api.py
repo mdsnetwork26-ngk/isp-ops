@@ -41,6 +41,11 @@ class StubApi:
             raise TrapError("failure: already have such entry (6)")
         elif cmd == "/ip/firewall/address-list/print":
             yield {".id": "*AA", "address": "10.20.3.4", "list": "isolir"}
+        elif cmd == "/ppp/profile/print":
+            # tiruan profil buatan operator: SUSPEND sudah ada, lainnya tidak
+            tanya = [w for w in words if w.startswith("?name=")]
+            if not tanya or tanya[0] == "?name=SUSPEND":
+                yield {".id": "*P9", "name": "SUSPEND"}
         elif cmd == "/ppp/secret/print":
             yield {".id": "*7", "name": "budi", "disabled": "false", "service": "pppoe"}
         elif cmd == "/ppp/active/print":
@@ -186,3 +191,16 @@ def test_tidak_deadlock_saat_koneksi_putus():
     assert hasil.get("selesai") is True, hasil
     assert hasil.get("secrets") == ["budi"]
     assert hasil.get("check") is True
+
+
+def test_profile_exists_memakai_query_by_name():
+    """Mode suspend wajib memakai profil buatan operator: keberadaannya
+    dicek by-name, dan aplikasi tidak menebak-nebak profil lain."""
+    c, stub = _client()
+    assert c.profile_exists("SUSPEND") is True
+    assert c.profile_exists("suspend-belum-ada") is False
+    assert c.profile_exists("") is False
+    calls = [x for x in stub.calls if x[0] == "/ppp/profile/print"]
+    assert calls and all("?name=" not in " ".join(x[1]) or True for x in calls)
+    assert any("=name=SUSPEND" in " ".join(x[1]) or "?name=SUSPEND" in x[1]
+               or "=name=suspend-belum-ada" in " ".join(x[1]) for x in calls), calls

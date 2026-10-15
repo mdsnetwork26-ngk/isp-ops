@@ -96,10 +96,33 @@ class RouterClient(ABC):
     def set_secret_profile(self, name: str, profile: str) -> bool:
         """Pindahkan secret ke profil lain. False bila secret tak ada."""
 
+    def profile_exists(self, name: str) -> bool:
+        """True bila profil PPP bernama `name` ada di router.
+
+        Mode suspend memakai profil yang SUDAH dibuat operator, jadi
+        keberadaannya wajib dicek sebelum secret dipindah -- aplikasi tidak
+        boleh membuat profil sendiri. Implementasi bawaan memakai
+        ppp_profiles(); adapter boleh menimpanya dengan query yang lebih
+        ringan. Nama dibandingkan persis (peka huruf besar/kecil).
+        """
+        if not name:
+            return False
+        try:
+            return name in self.ppp_profiles()
+        except Exception:  # noqa: BLE001 - adapter tak bisa membaca profil
+            return False
+
     @abstractmethod
     def ensure_suspend_profile(self, profile: str, pool: str, subnet: str) -> bool:
-        """Pastikan pool IP + profil PPP suspend ada (dibuat bila belum). True bila dibuat."""
+        """USANG: dulu mode suspend membuat pool + profil sendiri.
+
+        Tidak lagi dipanggil oleh layanan isolir (profil suspend dibuat
+        manual oleh operator). Dipertahankan hanya untuk kompatibilitas.
+        """
 
     @abstractmethod
     def ensure_suspend_rule(self, subnet: str, action: str, comment: str) -> bool:
-        """Rule firewall drop untuk subnet suspend. True bila dibuat baru."""
+        """USANG: dulu mode suspend membuat rule firewall subnet sendiri.
+
+        Tidak lagi dipanggil oleh layanan isolir. Lihat ensure_suspend_profile.
+        """

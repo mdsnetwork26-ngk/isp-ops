@@ -30,6 +30,13 @@ def _int(name: str, default: int) -> int:
 class Settings:
     # --- dasar ---
     app_name: str = os.getenv("APP_NAME", "ISP-OPS")
+    # Host resmi aplikasi ini, pisahkan koma: "192.168.38.2,ops.contoh.id".
+    # Bila diisi, request dari klien suspend yang Host-nya BUKAN salah satu
+    # ini dianggap lalu lintas asing yang ter-dst-nat (klien membuka situs
+    # apa saja, router membelokkannya ke sini) dan langsung diarahkan ke
+    # halaman isolir -- termasuk jalur "/" dan "/login" yang namanya
+    # bertabrakan dengan halaman aplikasi. Kosong = pembeda host mati.
+    app_hosts: str = os.getenv("APP_HOSTS", "")
     app_version: str = "1.0.0"
     host: str = os.getenv("HOST", "0.0.0.0")
     port: int = _int("PORT", 8000)
@@ -70,11 +77,32 @@ class Settings:
     isolir_disable_secret: bool = _bool("ISOLIR_DISABLE_SECRET", True)
     isolir_kick_active: bool = _bool("ISOLIR_KICK_ACTIVE", True)
     # Mode isolir: "disable" (klasik: disable secret + address-list; ada banjir
-    # log login PPPoE gagal karena CPE redial terus) atau "suspend" (secret
-    # dipindah ke profil SUSPENDED: login tetap berhasil, address dari pool
-    # khusus yang di-drop firewall -> blok menempel di akun, bukan IP).
+    # log login PPPoE gagal karena CPE redial terus) atau "suspend" (alur baru
+    # di bawah -- secret dipindah ke profil suspend yang SUDAH dibuat manual
+    # oleh operator di MikroTik: login tetap berhasil, blok menempel di akun,
+    # bukan IP).
     isolir_mode: str = os.getenv("ISOLIR_MODE", "disable").strip().lower()  # disable | suspend
-    suspend_profile: str = os.getenv("SUSPEND_PROFILE", "SUSPENDED")
+    # --- mode suspend (ISOLIR_MODE=suspend) ---
+    # Nama profil suspend PERSIS seperti yang sudah dibuat operator di
+    # /ppp profile MikroTik (peka huruf besar/kecil). Aplikasi TIDAK membuat
+    # profil/pool/rule apa pun: kalau profil ini tidak ditemukan di router,
+    # isolir DIBATALKAN dengan pesan jelas (bukan diam-diam membuat profil
+    # lain). Isi pool / rate-limit / halaman isolir sepenuhnya urusan profil
+    # buatan operator ini.
+    suspend_profile: str = os.getenv("SUSPEND_PROFILE", "SUSPEND")
+    # Profil tujuan Buka bila profil asal pelanggan tidak tercatat di database
+    # (mis. secret pernah dipindah manual di WinBox). Hanya dipakai sebagai
+    # jalan terakhir dan selalu ditulis sebagai peringatan di log.
+    suspend_fallback_profile: str = os.getenv("SUSPEND_FALLBACK_PROFILE", "default")
+    # --- halaman isolir untuk klien di profil suspend ---
+    # Halaman publik /isolir (tanpa login) yang dituju pengalihan MikroTik.
+    # Pesan & kontak boleh dikosongkan: halaman memakai teks bawaan.
+    isolir_pesan: str = os.getenv("ISOLIR_PESAN", "")
+    isolir_kontak: str = os.getenv("ISOLIR_KONTAK", "")  # mis. "Admin MDS Network"
+    isolir_wa: str = os.getenv("ISOLIR_WA", "")          # mis. "6281234567890" (tombol WhatsApp)
+    # --- usang, tidak dipakai lagi oleh mode suspend (dulu aplikasi membuat
+    # pool + profil + rule firewall sendiri). Masih dibaca supaya .env lama
+    # tidak error; boleh dihapus dari .env.
     suspend_pool: str = os.getenv("SUSPEND_POOL", "ISP-OPS-SUSPEND")
     suspend_subnet: str = os.getenv("SUSPEND_SUBNET", "10.254.254.0/24")
     suspend_rule_comment: str = os.getenv("SUSPEND_RULE_COMMENT", "ISP-OPS SUSPEND")
@@ -116,6 +144,11 @@ class Settings:
     demo_mode: bool = _bool("DEMO_MODE", False)
 
     extra: dict = field(default_factory=dict)
+
+    @property
+    def app_host_list(self) -> list[str]:
+        return [h.strip().lower().split(":")[0]
+                for h in self.app_hosts.split(",") if h.strip()]
 
     @property
     def onu_candidate_list(self) -> list[str]:

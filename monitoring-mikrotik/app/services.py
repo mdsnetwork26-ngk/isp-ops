@@ -598,58 +598,160 @@ def log_action(
     return entry
 
 
-async def _isolir_suspend(client, cust) -> list[str]:
-    """Mode suspend: pindahkan secret PPP ke profil SUSPENDED.
+async def _wajib_profil_ada(client, profil: str, peran: str) -> None:
+    """Gagalkan aksi bila profil tujuan tidak ada di router.
 
-    Login PPPoE tetap berhasil (tidak ada banjir log auth gagal dari CPE yang
-    redial terus), tapi address-nya diambil dari pool khusus yang di-drop di
-    firewall -- blokade menempel di akun, bukan di IP, jadi tidak bocor saat
-    IP pelanggan berubah. Profil asli disimpan di customers.ppp_profile supaya
-    tombol Buka bisa memulihkannya. Kembalikan daftar detail untuk log.
+    Profil suspend (dan profil asal saat Buka) adalah buatan operator di
+    MikroTik -- aplikasi tidak boleh membuat profil sendiri diam-diam,
+    karena isi pool / rate-limit / redirect halaman isolirnya hanya operator
+    yang tahu. Pesan galatnya menyebut profil yang tersedia supaya teknisi
+    langsung tahu harus mengoreksi SUSPEND_PROFILE atau membuat profilnya.
+    """
+    if not profil:
+        raise RuntimeError(f"nama profil {peran} kosong -- periksa konfigurasi .env")
+    if await to_thread(client.profile_exists, profil):
+        return
+    try:
+        tersedia = [p for p in await to_thread(client.ppp_profiles) if p]
+    except Exception:  # noqa: BLE001 - daftar hanya pelengkap pesan galat
+        tersedia = []
+    daftar = ", ".join(tersedia) if tersedia else "(tidak terbaca)"
+    raise RuntimeError(
+        f"profil {peran} '{profil}' tidak ditemukan di router "
+        f"(profil tersedia: {daftar}). Buat dulu profil '{profil}' di "
+        f"MikroTik lewat /ppp profile, atau sesuaikan namanya di .env "
+        f"(SUSPEND_PROFILE=... untuk profil suspend). Tidak ada yang diubah."
+    )
+
+
+async def _set_dan_verifikasi_profil(client, nama: str, profil: str, peran: str) -> None:
+    """Pindah profil secret lalu baca ulang untuk memastikan benar-benar pindah.
+
+    RouterOS menerima /ppp secret set tanpa memastikan sesi aktif ikut
+    berubah -- profil baru hanya berlaku saat login berikutnya (itulah
+    sebabnya pemanggil WAJIB menghapus sesi aktif sesudah langkah ini).
+    """
+    if not await to_thread(client.set_secret_profile, nama, profil):
+        raise RuntimeError(
+            f"gagal memindah secret '{nama}' ke profil {peran} '{profil}': "
+            f"secret PPP tidak ditemukan di router"
+        )
+    terpasang = await to_thread(client.secret_profile, nama)
+    # Adapter tertentu (SSH) bisa gagal membaca ulang kolom profil; hanya
+    # nilai terbaca yang jelas-jelas berbeda yang dianggap gagal.
+    if terpasang and terpasang.strip() != profil:
+        raise RuntimeError(
+            f"verifikasi gagal: profil secret '{nama}' masih "
+            f"'{terpasang.strip()}', bukan '{profil}' -- tidak ada sesi "
+            f"yang diputus, periksa hak tulis user API di MikroTik"
+        )
+
+
+async def _isolir_suspend(client, cust) -> list[str]:
+    """Isolir mode suspend: masukkan klien ke profil suspend buatan operator.
+
+    Alur (persis permintaan operator):
+      1. Pastikan profil suspend (SUSPEND_PROFILE) SUDAH ada di router.
+         Aplikasi tidak membuat pool/profil/rule apa pun.
+      2. Baca profil secret saat ini; simpan sebagai profil asal di
+         customers.ppp_profile (tidak ditimpa bila sudah tercatat, supaya
+         isolir berulang tidak menyimpan 'profil suspend' sebagai asal).
+      3. Pastikan secret aktif (tidak di-disable) agar login PPPoE ke
+         profil suspend berhasil dan tidak membanjiri log auth gagal.
+      4. Pindah secret ke profil suspend + verifikasi baca-ulang.
+         Sesi aktif dihapus oleh pemanggil tepat sesudah ini, supaya klien
+         login ulang dan berpindah ke profil suspend.
+    Profil asal hanya ditulis ke `cust` SETELAH pemindahan terverifikasi,
+    jadi isolir yang gagal tidak meninggalkan catatan asal yang keliru.
     """
     detail: list[str] = []
-    profil_asli = await to_thread(client.secret_profile, cust.name)
-    if profil_asli is None:
+    suspend = (settings.suspend_profile or "").strip()
+    await _wajib_profil_ada(client, suspend, "suspend")
+
+    profil_kini = await to_thread(client.secret_profile, cust.name)
+    if profil_kini is None:
         raise RuntimeError("secret PPP tidak ditemukan di router")
-    if profil_asli and profil_asli != settings.suspend_profile and not cust.ppp_profile:
-        cust.ppp_profile = profil_asli  # simpan sebelum secret dipindah
-    if await to_thread(
-        client.ensure_suspend_profile,
-        settings.suspend_profile, settings.suspend_pool, settings.suspend_subnet,
-    ):
+    profil_kini = profil_kini.strip()
+
+    tersimpan = (cust.ppp_profile or "").strip()
+    # Profil asal = yang tercatat sebelumnya (isolir berulang) atau profil
+    # saat ini. Profil kosong di RouterOS berarti memakai 'default'.
+    profil_asal = tersimpan or (profil_kini if profil_kini != suspend else "")
+    if not profil_asal and not profil_kini:
+        profil_asal = "default"
+
+    if await to_thread(client.set_secret_disabled, cust.name, False):
+        detail.append("PPP secret dipastikan aktif (tidak di-disable)")
+
+    if profil_kini == suspend:
+        detail.append(f"secret sudah berada di profil suspend '{suspend}'")
+        if not tersimpan:
+            detail.append(
+                "PERINGATAN: profil asal tidak tercatat di database -- "
+                "saat Buka nanti klien dikembalikan ke profil "
+                f"'{settings.suspend_fallback_profile}'"
+            )
+    else:
+        await _set_dan_verifikasi_profil(client, cust.name, suspend, "suspend")
         detail.append(
-            f"pool '{settings.suspend_pool}' + profil '{settings.suspend_profile}' "
-            f"({settings.suspend_subnet}) dibuat"
+            f"profil asal '{profil_asal}' tersimpan; secret dipindah ke "
+            f"profil suspend '{suspend}'"
         )
-    if await to_thread(client.set_secret_profile, cust.name, settings.suspend_profile):
-        detail.append(
-            f"profil asli '{profil_asli}' tersimpan; secret dipindah ke profil "
-            f"'{settings.suspend_profile}'"
-        )
-    if await to_thread(
-        client.ensure_suspend_rule,
-        settings.suspend_subnet, settings.isolir_action, settings.suspend_rule_comment,
-    ):
-        detail.append(
-            f"rule firewall '{settings.suspend_rule_comment}' "
-            f"(src {settings.suspend_subnet}) dibuat"
-        )
+
+    if profil_asal and profil_asal != suspend:
+        cust.ppp_profile = profil_asal  # aman ditulis: pemindahan terverifikasi
     return detail
 
 
 async def _buka_suspend(client, cust) -> list[str]:
-    """Buka isolir mode suspend: aktifkan secret + pulihkan profil asli."""
+    """Buka isolir mode suspend: kembalikan klien ke profil asalnya.
+
+    Alur kebalikan dari _isolir_suspend:
+      1. Tentukan profil asal dari customers.ppp_profile. Bila tidak
+         tercatat: pakai profil saat ini bila ia sudah bukan suspend
+         (mis. sudah dipulihkan manual di WinBox); jalan terakhirnya
+         SUSPEND_FALLBACK_PROFILE, selalu sebagai peringatan di log.
+      2. Pastikan profil asal itu masih ada di router -- bila sudah
+         dihapus/berganti nama, Buka DIBATALKAN dan catatan profil asal
+         TIDAK dihapus, supaya bisa dicoba lagi setelah profil dibuat.
+      3. Aktifkan secret, pindah profil, verifikasi. Sesi aktif dihapus
+         oleh pemanggil tepat sesudah ini, supaya klien login ulang dan
+         lepas dari profil suspend.
+    Fungsi ini tidak mengubah `cust`; penghapusan customers.ppp_profile
+    dilakukan pemanggil hanya setelah seluruh langkah berhasil.
+    """
     detail: list[str] = []
+    suspend = (settings.suspend_profile or "").strip()
+
+    profil_kini = await to_thread(client.secret_profile, cust.name)
+    if profil_kini is None:
+        raise RuntimeError("secret PPP tidak ditemukan di router")
+    profil_kini = profil_kini.strip()
+
+    tersimpan = (cust.ppp_profile or "").strip()
+    if tersimpan:
+        target = tersimpan
+    elif profil_kini and profil_kini != suspend:
+        target = profil_kini
+        detail.append(
+            f"profil asal tidak tercatat; secret sudah di profil '{target}'"
+        )
+    else:
+        target = (settings.suspend_fallback_profile or "default").strip()
+        detail.append(
+            "PERINGATAN: profil asal tidak tercatat di database -- "
+            f"klien dikembalikan ke profil '{target}'"
+        )
+
     if await to_thread(client.set_secret_disabled, cust.name, False):
         detail.append("PPP secret diaktifkan kembali")
-    if cust.ppp_profile:
-        await to_thread(client.set_secret_profile, cust.name, cust.ppp_profile)
-        detail.append(f"profil dikembalikan ke '{cust.ppp_profile}'")
+
+    if profil_kini == target:
+        detail.append(f"profil secret sudah di profil asal '{target}'")
     else:
-        kini = await to_thread(client.secret_profile, cust.name)
-        if kini == settings.suspend_profile:
-            await to_thread(client.set_secret_profile, cust.name, "default")
-            detail.append("profil asli tidak tercatat -- profil dikembalikan ke 'default'")
+        await _wajib_profil_ada(client, target, "asal pelanggan")
+        await _set_dan_verifikasi_profil(client, cust.name, target, "asal pelanggan")
+        detail.append(f"profil dikembalikan ke profil asal '{target}'")
     return detail
 
 
@@ -664,8 +766,10 @@ async def isolate_customer(
     """Isolir pelanggan.
 
     Mode "disable" (klasik): IP masuk address-list + drop forward, secret
-    di-disable, sesi diputus. Mode "suspend" (ISOLIR_MODE=suspend): secret
-    dipindah ke profil SUSPENDED -- klien offline pun tetap bisa diisolir
+    di-disable, sesi diputus. Mode "suspend" (ISOLIR_MODE=suspend): profil
+    asal pelanggan disimpan, secret dipindah ke profil suspend buatan
+    operator, lalu sesi PPPoE aktif DIHAPUS supaya klien login ulang dan
+    berpindah ke profil suspend -- klien offline pun tetap bisa diisolir
     karena blok menempel di akun, bukan IP.
     """
     db = SessionLocal()
@@ -715,10 +819,35 @@ async def isolate_customer(
         detail: list[str] = []
         try:
             if suspend:
-                # blok menempel di akun: klien offline pun bisa diisolir
+                # Blok menempel di akun: klien offline pun bisa diisolir.
+                # Aplikasi tidak menyentuh address-list / firewall / pool /
+                # profil sama sekali di mode ini -- profil suspend sepenuhnya
+                # milik operator.
                 detail += await _isolir_suspend(client, cust)
-                if not ip:
-                    detail.append("klien sedang offline -- profil suspend berlaku saat online")
+                # WAJIB di mode suspend (tidak tergantung ISOLIR_KICK_ACTIVE):
+                # tanpa menghapus sesi aktif, klien tetap berjalan di profil
+                # lama sampai putus sendiri dan isolir terasa "tidak bekerja".
+                try:
+                    kicked = await to_thread(client.kick_active, cust.name)
+                except Exception as exc:  # noqa: BLE001
+                    # Profil sudah terverifikasi pindah; gagal menghapus sesi
+                    # jangan membatalkan isolir -- catat saja dengan jelas.
+                    detail.append(
+                        f"PERINGATAN: gagal menghapus sesi PPPoE aktif ({exc}) "
+                        f"-- profil suspend berlaku saat klien login berikutnya"
+                    )
+                else:
+                    if kicked:
+                        detail.append(
+                            f"{kicked} sesi PPPoE aktif dihapus -- klien login "
+                            f"ulang ke profil suspend '{settings.suspend_profile}'"
+                        )
+                    else:
+                        detail.append(
+                            "tidak ada sesi PPPoE aktif yang dihapus (klien "
+                            "offline -- profil suspend berlaku saat login "
+                            "berikutnya)"
+                        )
             else:
                 dibuat = await to_thread(
                     client.ensure_isolir_rule,
@@ -734,9 +863,9 @@ async def isolate_customer(
                 if settings.isolir_disable_secret:
                     if await to_thread(client.set_secret_disabled, cust.name, True):
                         detail.append("PPP secret di-disable")
-            if settings.isolir_kick_active:
-                kicked = await to_thread(client.kick_active, cust.name)
-                detail.append(f"{kicked} sesi diputus")
+                if settings.isolir_kick_active:
+                    kicked = await to_thread(client.kick_active, cust.name)
+                    detail.append(f"{kicked} sesi diputus")
         except Exception as exc:  # noqa: BLE001
             log_action(
                 db, actor=actor, action="isolate", customer_name=cust.name,
@@ -772,7 +901,13 @@ async def open_customer(
     name: str | None = None,
     router_id: int | None = None,
 ) -> dict:
-    """Buka isolir: hapus dari address-list, aktifkan secret, pelanggan bisa konek lagi."""
+    """Buka isolir pelanggan.
+
+    Mode "disable": hapus IP dari address-list + aktifkan secret lagi.
+    Mode "suspend": secret dikembalikan ke profil asal yang tercatat, lalu
+    sesi PPPoE aktif DIHAPUS supaya klien login ulang dan lepas dari profil
+    suspend. Catatan profil asal hanya dihapus setelah pemulihan berhasil.
+    """
     db = SessionLocal()
     try:
         cust = _find_customer(db, customer_id, name, router_id)
@@ -800,28 +935,62 @@ async def open_customer(
         client = pool.client_for(router)
         detail: list[str] = []
         try:
-            removed = 0
-            for candidate in {c for c in (ip, cust.ip) if c}:
-                removed += await to_thread(
-                    client.remove_address_list, settings.isolir_list, candidate
-                )
-            detail.append(f"{removed} entri address-list dihapus")
             if settings.isolir_mode == "suspend":
-                # enable secret tanpa syarat: menutup kasus isolir lama yang
-                # sempat dibuat saat masih mode disable
+                # Bersihkan sisa isolir cara lama (mode disable) bila ada:
+                # pelanggan lama yang dulu masuk address-list harus lepas
+                # juga, tapi di alur suspend murni langkah ini tidak
+                # menghasilkan apa-apa dan tidak perlu memenuhi log.
+                removed = 0
+                for candidate in {c for c in (ip, cust.ip) if c}:
+                    removed += await to_thread(
+                        client.remove_address_list, settings.isolir_list, candidate
+                    )
+                if removed:
+                    detail.append(
+                        f"sisa isolir lama: {removed} entri address-list dihapus"
+                    )
+                # _buka_suspend juga mengaktifkan secret tanpa syarat:
+                # menutup kasus isolir lama yang sempat dibuat saat masih
+                # mode disable (secret sempat di-disable).
                 detail += await _buka_suspend(client, cust)
-                cust.ppp_profile = ""
-                if settings.isolir_kick_active:
+                # WAJIB di mode suspend (tidak tergantung ISOLIR_KICK_ACTIVE):
+                # sesi yang masih nyangkut di profil suspend tidak berganti
+                # profil sebelum reconnect -- hapus supaya klien login ulang
+                # dengan profil asal.
+                try:
                     kicked = await to_thread(client.kick_active, cust.name)
+                except Exception as exc:  # noqa: BLE001
+                    detail.append(
+                        f"PERINGATAN: gagal menghapus sesi PPPoE aktif ({exc}) "
+                        f"-- profil asal berlaku saat klien login berikutnya"
+                    )
+                else:
                     if kicked:
-                        # sesi yang masih nyangkut di pool suspend tidak ganti
-                        # profil sebelum reconnect -> putus supaya langsung berlaku
                         detail.append(
-                            f"{kicked} sesi diputus supaya profil asli langsung berlaku"
+                            f"{kicked} sesi PPPoE aktif dihapus -- klien login "
+                            f"ulang dengan profil asal, lepas dari profil "
+                            f"suspend '{settings.suspend_profile}'"
                         )
-            elif settings.isolir_disable_secret:
-                if await to_thread(client.set_secret_disabled, cust.name, False):
-                    detail.append("PPP secret diaktifkan kembali")
+                    else:
+                        detail.append(
+                            "tidak ada sesi PPPoE aktif yang dihapus (klien "
+                            "offline -- profil asal berlaku saat login "
+                            "berikutnya)"
+                        )
+                # Hanya dihapus setelah profil terverifikasi pulih DAN sesi
+                # sudah ditangani; bila langkah di atas gagal, catatan ini
+                # tetap ada supaya tombol Buka bisa dicoba lagi.
+                cust.ppp_profile = ""
+            else:
+                removed = 0
+                for candidate in {c for c in (ip, cust.ip) if c}:
+                    removed += await to_thread(
+                        client.remove_address_list, settings.isolir_list, candidate
+                    )
+                detail.append(f"{removed} entri address-list dihapus")
+                if settings.isolir_disable_secret:
+                    if await to_thread(client.set_secret_disabled, cust.name, False):
+                        detail.append("PPP secret diaktifkan kembali")
         except Exception as exc:  # noqa: BLE001
             log_action(
                 db, actor=actor, action="open", customer_name=cust.name,

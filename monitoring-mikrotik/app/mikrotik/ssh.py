@@ -172,6 +172,16 @@ class RouterOSSSH(RouterClient):
                 self._run(f"ppp active remove numbers={shlex.quote(num)}")
         return len(rows)
 
+    def ppp_profiles(self) -> list[str]:
+        rows = _rows(self._run("ppp profile print"))
+        return [r.get("name", "") for r in rows if r.get("name")]
+
+    def profile_exists(self, name: str) -> bool:
+        if not name:
+            return False
+        rows = _rows(self._run(f"ppp profile print where name={shlex.quote(name)}"))
+        return any(r.get("name") == name for r in rows)
+
     # ---------------------- mode suspend (ISOLIR_MODE=suspend)
     def secret_profile(self, name: str) -> str | None:
         rows = _rows(self._run(f"ppp secret print where name={shlex.quote(name)}"))

@@ -113,14 +113,150 @@ def _onu_dari_host(host: str):
     return ".".join(str(o) for o in okt), int(ports or 80), domain
 
 
+# Jalur yang selalu publik karena menjadi tujuan pengalihan klien suspend:
+# halaman isolir + URL uji konektivitas OS (Android/Apple/Windows memakai
+# URL ini; menjawabnya dengan halaman isolir membuat HP menampilkan portal).
+_JALUR_ISOLIR = ("/isolir", "/terisolir", "/generate_204", "/gen_204",
+                 "/hotspot-detect.html", "/library/test/success.html",
+                 "/connecttest.txt", "/ncsi.txt", "/success.txt")
+
+# Host uji portal milik OS/browser. Request dengan Host ini hanya bisa
+# tiba di server lewat dst-nat MikroTik (klien suspend membuka situs itu,
+# router membelokkannya ke sini) -- jadi apa pun jalurnya, termasuk
+# "/login" milik Brave (detectportal.brave-http-only.com/login) yang
+# bertabrakan dengan jalur login operator, jawabannya harus halaman
+# isolir, bukan halaman aplikasi.
+_HOST_PORTAL = {
+    "detectportal.brave-http-only.com",
+    "connectivitycheck.gstatic.com", "connectivitycheck.android.com",
+    "clients3.google.com", "captive.apple.com",
+    "www.msftconnecttest.com", "www.msftncsi.com",
+    "detectportal.firefox.com", "connectivity-check.ubuntu.com",
+}
+
+
+def _ip_pengunjung(request: Request) -> str:
+    """IP asal pengunjung. Header proxy hanya dipercaya bila pengirimnya
+    proxy lokal/privat (nginx di server yang sama, docker, dst.) supaya
+    pengunjung internet tidak bisa memalsukan IP pelanggan lain."""
+    peer = request.client.host if request.client else ""
+    from .util import is_private_ip
+
+    if peer in ("127.0.0.1", "::1", "testclient") or (peer and is_private_ip(peer)):
+        for header in ("x-real-ip", "x-forwarded-for"):
+            nilai = (request.headers.get(header) or "").split(",")[0].strip()
+            if nilai:
+                return nilai
+    return peer or ""
+
+
+def _pelanggan_terisolir(ip: str) -> dict | None:
+    """Data pelanggan terisolir pemilik IP ini (untuk halaman isolir).
+
+    Klien suspend menerima IP baru dari pool profil suspend; poller
+    memperbarui customers.ip dari sesi PPPoE aktif, jadi IP barunya
+    tetap bisa dicocokkan ke pelanggan yang sedang diisolir.
+    """
+    if not ip:
+        return None
+    db = SessionLocal()
+    try:
+        c = (db.query(Customer)
+             .filter(Customer.ip == ip, Customer.isolated.is_(True))
+             .order_by(Customer.id.desc()).first())
+        if c is None:
+            return None
+        return {
+            "nama": c.full_name or c.name,
+            "username": c.name,
+            "alasan": c.isolated_reason or "",
+            "sejak": (c.isolated_at.strftime("%d-%m-%Y %H:%M")
+                      if c.isolated_at else ""),
+            "ip": ip,
+        }
+    except Exception:  # noqa: BLE001 - halaman tetap tampil tanpa data
+        return None
+    finally:
+        db.close()
+
+
+def _tautan_wa(pelanggan: dict | None) -> str:
+    """Tautan wa.me dari ISOLIR_WA (boleh ditulis 08xx atau 628xx)."""
+    import re as _re_wa
+    from urllib.parse import quote
+
+    digit = _re_wa.sub(r"\D", "", settings.isolir_wa or "")
+    if not digit:
+        return ""
+    if digit.startswith("0"):
+        digit = "62" + digit[1:]
+    sapaan = "Halo admin"
+    if settings.isolir_kontak:
+        sapaan = f"Halo {settings.isolir_kontak}"
+    siapa = f" ({pelanggan['nama']})" if pelanggan else ""
+    teks = quote(f"{sapaan}, saya{siapa} mohon info tagihan / buka isolir internet saya.")
+    return f"https://wa.me/{digit}?text={teks}"
+
+
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     request.state.user = settings.auth_user
     request.state.role = "admin"
+    path = request.url.path
+    host = (request.headers.get("host") or "").split(":")[0].strip().lower()
+    # Sesi operator yang sah MENANG atas semua pengalihan isolir di bawah:
+    # admin yang membuka panel lewat host/alamat mana pun (domain, IP lain,
+    # nama host server) tidak boleh ikut terbelok ke halaman isolir hanya
+    # karena host-nya tidak tercantum di APP_HOSTS. Klien suspend tidak
+    # membawa cookie sesi operator, jadi mereka tetap teralihkan.
+    sesi_operator = (auth.get_session(request.cookies.get("ispops_sid", ""))
+                     if settings.auth_password else None)
+    # Pengalihan isolir berbasis Host hanya berlaku untuk lalu lintas dari
+    # jaringan sendiri (IP privat: klien PPPoE 10.200.0.x, router yang
+    # me-masquerade, LAN operator). Pengunjung dari internet publik --
+    # misalnya HP memakai DATA SELULER -- tidak boleh ikut terbelok ke
+    # halaman isolir hanya karena Host-nya bukan host resmi aplikasi.
+    from .util import is_private_ip as _is_private
+
+    ip_pengunjung = _ip_pengunjung(request)
+    dari_jaringan_sendiri = bool(
+        ip_pengunjung and (ip_pengunjung == "testclient"
+                           or _is_private(ip_pengunjung)))
+    # Host BUKAN host resmi aplikasi (APP_HOSTS terisi): ini lalu lintas
+    # asing klien suspend yang ter-dst-nat -- situs apa pun yang ia buka,
+    # termasuk halaman depannya ("/") yang bertabrakan dengan dashboard.
+    # Host subdomain ONU dikecualikan (itu memang pola host aplikasi),
+    # dan /login selalu dikecualikan di sini (jalan darurat admin masuk
+    # dari alamat mana pun; khusus host portal seperti Brave tetap
+    # dibelokkan oleh blok host portal di bawahnya).
+    host_resmi = settings.app_host_list
+    if (host_resmi and request.method in ("GET", "HEAD")
+            and sesi_operator is None and dari_jaringan_sendiri
+            and host and host not in host_resmi
+            and not _onu_dari_host(request.headers.get("host", ""))
+            and not path.startswith(("/api/", "/static/"))
+            and path not in _JALUR_ISOLIR and path not in ("/health", "/login")):
+        return RedirectResponse("/isolir", status_code=302)
+    # Host portal captive (Brave/Chrome/Apple/dll.): selalu halaman isolir,
+    # apa pun jalurnya -- termasuk "/login" Brave yang bertabrakan nama.
+    if (request.method in ("GET", "HEAD") and host in _HOST_PORTAL
+            and sesi_operator is None
+            and path not in _JALUR_ISOLIR):
+        return RedirectResponse("/isolir", status_code=302)
+    # Klien yang sedang diisolir dan sampai ke server ini (pengalihan
+    # MikroTik meneruskan HTTP-nya ke sini) selalu diarahkan ke halaman
+    # isolir, apa pun URL asal yang ia buka. API & jalur publik dikecualikan
+    # supaya teknisi dan halaman isolirnya sendiri tidak ikut teralihkan.
+    if (request.method in ("GET", "HEAD")
+            and sesi_operator is None
+            and not path.startswith("/api/")
+            and not any(path == q or path.startswith("/static/") for q in _JALUR_ISOLIR)
+            and path != "/health"):
+        if _pelanggan_terisolir(ip_pengunjung):
+            return RedirectResponse("/isolir", status_code=302)
     if not settings.auth_password:  # login dimatikan (mode demo/development)
         return await call_next(request)
-    path = request.url.path
-    public = ("/static/", "/health", "/login", "/api/login")
+    public = ("/static/", "/health", "/login", "/api/login") + _JALUR_ISOLIR
     if any(path.startswith(q) for q in public):
         return await call_next(request)
     sesi = auth.get_session(request.cookies.get("ispops_sid", ""))
@@ -130,6 +266,16 @@ async def auth_middleware(request: Request, call_next):
         onu = _onu_dari_host(request.headers.get("host", ""))
         if onu:
             return RedirectResponse(f"https://{onu[2]}/login", status_code=302)
+        # Jalur asing (bukan halaman aplikasi) yang sampai ke server ini
+        # hampir pasti lalu lintas HTTP klien suspend yang di-dst-nat oleh
+        # MikroTik: IP sumbernya sudah ter-masquerade oleh router sehingga
+        # tidak bisa dikenali per-pelanggan. Tampilkan halaman isolir
+        # (umum), BUKAN halaman login operator -- klien tidak boleh melihat
+        # apalagi mencoba login ke panel. Halaman aplikasi yang sah tetap
+        # diarahkan ke login seperti biasa.
+        if (request.method in ("GET", "HEAD")
+                and path not in ("/", "/pengaturan", "/log")):
+            return RedirectResponse("/isolir", status_code=302)
         return RedirectResponse("/login", status_code=302)
     request.state.user = sesi["user"]
     request.state.role = sesi["role"]
@@ -253,6 +399,34 @@ async def page_logs(request: Request):
             "page": "log",
         },
     )
+
+
+@app.get("/isolir", response_class=HTMLResponse)
+@app.get("/terisolir", response_class=HTMLResponse)
+@app.get("/generate_204", response_class=HTMLResponse)
+@app.get("/gen_204", response_class=HTMLResponse)
+@app.get("/hotspot-detect.html", response_class=HTMLResponse)
+@app.get("/library/test/success.html", response_class=HTMLResponse)
+@app.get("/connecttest.txt", response_class=HTMLResponse)
+@app.get("/ncsi.txt", response_class=HTMLResponse)
+@app.get("/success.txt", response_class=HTMLResponse)
+async def page_isolir(request: Request):
+    """Halaman isolir publik (tanpa login) untuk klien profil suspend.
+
+    MikroTik mengalihkan HTTP klien SUSPEND-LIST ke server ini; URL uji
+    konektivitas OS ikut diarahkan ke sini supaya HP/laptop klien langsung
+    memunculkan halaman ini sebagai portal. Bila IP pengunjung dikenal
+    sebagai pelanggan terisolir, namanya ditampilkan di halaman.
+    """
+    pelanggan = _pelanggan_terisolir(_ip_pengunjung(request))
+    resp = templates.TemplateResponse(
+        request, "isolir.html",
+        {"settings": settings, "pelanggan": pelanggan,
+         "tautan_wa": _tautan_wa(pelanggan)},
+    )
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    resp.headers["Pragma"] = "no-cache"
+    return resp
 
 
 @app.get("/health")

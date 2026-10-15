@@ -265,12 +265,11 @@ Semua perilakunya bisa diatur di `.env`:
 | `ISOLIR_ACTION` | `drop` (putus total) atau `reject` (lebih cepat terasa error) | `drop` |
 | `ISOLIR_TIMEOUT` | mis. `1h` = isolir lepas sendiri setelah 1 jam | kosong = permanen |
 | `ISOLIR_DISABLE_SECRET` | ikut matikan PPP secret | `true` |
-| `ISOLIR_KICK_ACTIVE` | ikut putuskan sesi berjalan | `true` |
+| `ISOLIR_KICK_ACTIVE` | ikut putuskan sesi berjalan (mode `disable` saja; mode `suspend` selalu menghapus sesi) | `true` |
 | `ISOLIR_MODE` | `disable` (klasik) atau `suspend` (lihat di bawah) | `disable` |
-| `SUSPEND_PROFILE` | nama profil PPP untuk pelanggan suspend | `SUSPENDED` |
-| `SUSPEND_POOL` | nama pool IP suspend | `ISP-OPS-SUSPEND` |
-| `SUSPEND_SUBNET` | subnet pool suspend | `10.254.254.0/24` |
-| `SUSPEND_RULE_COMMENT` | penanda rule firewall subnet suspend | `ISP-OPS SUSPEND` |
+| `SUSPEND_PROFILE` | nama profil suspend **persis seperti yang sudah dibuat manual di MikroTik** (peka huruf besar/kecil) | `SUSPEND` |
+| `SUSPEND_FALLBACK_PROFILE` | profil tujuan Buka bila profil asal pelanggan tidak tercatat di database | `default` |
+| `SUSPEND_POOL` / `SUSPEND_SUBNET` / `SUSPEND_RULE_COMMENT` | usang -- tidak dipakai lagi, boleh dihapus dari `.env` | - |
 
 > Mau metode lebih lembut? Set `ISOLIR_ACTION=drop` tetap, tapi hapus langkah
 > disable secret (`ISOLIR_DISABLE_SECRET=false`) — pelanggan masih bisa login,
@@ -281,23 +280,66 @@ Semua perilakunya bisa diatur di `.env`:
 
 Metode klasik (`disable`) mematikan PPP secret, sehingga CPE pelanggan terus
 mencoba login PPPoE dan **membanjiri log MikroTik** dengan percobaan login
-gagal. Mode `suspend` mengatasinya dengan cara yang berbeda:
+gagal. Mode `suspend` memakai **profil suspend yang sudah dibuat manual oleh
+operator di MikroTik** -- aplikasi sama sekali tidak membuat pool, profil,
+atau rule firewall sendiri. Isi profil itu (pool IP, rate-limit, halaman
+info bayar, dsb.) sepenuhnya urusan operator.
 
-- Secret **tidak** di-disable. Ia dipindah ke profil `SUSPENDED` yang
-  mengarah ke pool IP khusus (`10.254.254.0/24`), dan subnet itu di-drop di
-  chain forward. Login PPPoE tetap **berhasil** → tidak ada banjir log.
-- Blok menempel di **akun**, bukan IP → tidak bocor saat IP pelanggan berubah
-  saat reconnect (kelemahan address-list).
-- Pool, profil, dan rule firewall dibuat **otomatis** saat isolir pertama kali.
-- Pelanggan yang sedang **offline tetap bisa diisolir** (tidak butuh IP).
-- Profil asli disimpan di database (kolom `ppp_profile`, dimigrasi otomatis);
-  tombol **Buka** mengembalikan profil asli, mengaktifkan secret, lalu
-  memutus sesi sekali supaya profil langsung berlaku.
+**Prasyarat (sekali, di MikroTik):** buat profilnya di `/ppp profile`,
+misalnya nama `SUSPEND`, lalu isi `SUSPEND_PROFILE` di `.env` dengan nama
+yang **persis sama**. Bila profil itu tidak ditemukan di router, tombol
+Isolir **dibatalkan** dengan pesan yang menyebut profil-profil yang
+tersedia -- tidak ada yang diubah di MikroTik maupun di database.
+
+**Tombol Isolir:**
+1. Profil asal pelanggan disimpan di database (kolom `ppp_profile`).
+2. Secret dipindah ke profil suspend (secret **tidak** di-disable, jadi
+   login PPPoE tetap berhasil → tidak ada banjir log) dan diverifikasi
+   dengan dibaca ulang.
+3. **Sesi PPPoE aktif dihapus** (`/ppp active remove`) supaya klien login
+   ulang dan langsung berpindah ke profil suspend. Langkah ini selalu
+   dilakukan, tidak tergantung `ISOLIR_KICK_ACTIVE`.
+
+**Tombol Buka:**
+1. Secret dikembalikan ke profil asal yang tercatat, lalu diverifikasi.
+   Catatan profil asal hanya dihapus setelah langkah ini berhasil; bila
+   profil asal sudah terhapus dari router, Buka dibatalkan dan catatan
+   itu dipertahankan supaya bisa dicoba lagi.
+2. **Sesi PPPoE aktif dihapus lagi** supaya klien login ulang dengan
+   profil asal dan lepas dari profil suspend.
+
+Pelanggan yang sedang **offline tetap bisa diisolir/dibuka** (tidak butuh
+IP): perubahan profilnya berlaku saat login berikutnya, karena blok
+menempel di **akun**, bukan IP.
 
 ```bash
-# aktifkan di .env lalu restart:
+# aktifkan di .env lalu restart (nama profil sesuaikan dengan buatan Anda):
 ISOLIR_MODE=suspend
+SUSPEND_PROFILE=SUSPEND
 ```
+
+### Halaman isolir (pengalihan klien suspend)
+
+Aplikasi menyediakan halaman publik **`/isolir`** (tanpa login): *"Internet
+Sedang Dalam Masa Isolir"*, lengkap dengan nama pelanggan yang dikenali
+dari IP-nya dan tombol WhatsApp bila `ISOLIR_WA` diisi:
+
+```bash
+ISOLIR_WA=6281234567890        # opsional: tombol "Hubungi Admin via WhatsApp"
+ISOLIR_KONTAK=Admin MDS Network  # opsional: nama admin/CS yang ditampilkan
+ISOLIR_PESAN=                    # opsional: isi pesan khusus (kosong = bawaan)
+APP_HOSTS=192.168.38.2           # host resmi aplikasi: menyalakan pengalihan
+                                 # otomatis klien suspend dari situs apa pun
+```
+
+Supaya klien suspend sampai ke halaman itu, jalankan **sekali** di MikroTik
+skrip `mikrotik-suspend-redirect.rsc` (sesuaikan `serverIp`/`serverPort`
+ke server aplikasi Anda): HTTP (tcp 80) klien di address-list profil
+suspend di-`dst-nat` ke server ISP-OPS, DNS tetap diizinkan, lalu lintas
+forward lain di-drop. Karena URL uji konektivitas Android/Apple/Windows
+ikut dialihkan ke halaman ini, HP klien biasanya langsung memunculkannya
+sebagai portal. HTTPS sengaja tidak di-`dst-nat` (akan memicu peringatan
+sertifikat); ia cukup di-drop bersama lalu lintas lain.
 
 ---
 
