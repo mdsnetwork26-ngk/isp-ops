@@ -1,6 +1,8 @@
 """Semua endpoint HTTP (halaman + API JSON + proxy halaman ONU)."""
 from __future__ import annotations
 
+import ipaddress
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -46,7 +48,8 @@ class CustomerIn(BaseModel):
     ip: str = ""
     mac: str = ""
     onu_ip: str = ""
-    onu_port: int = 80
+    # 0 = deteksi otomatis (80/8080/8000), angka lain = port tetap
+    onu_port: int = 0
     onu_info: str = ""
     router_ip: str = ""
     router_port: int = 80
@@ -59,6 +62,16 @@ class ActionIn(BaseModel):
     name: Optional[str] = None
     router_id: Optional[int] = None
     reason: str = "belum bayar"
+
+
+class OnuPortIn(BaseModel):
+    """Permintaan port web untuk Remote ONU/router."""
+
+    id: Optional[int] = None
+    name: Optional[str] = None
+    router_id: Optional[int] = None
+    ip: str = ""
+    refresh: bool = False  # paksa deteksi ulang, abaikan cache
 
 
 # ============================================================================ bantu
@@ -329,6 +342,7 @@ def api_customers(
                 "mac": pretty_mac(c.mac),
                 "onu_ip": c.onu_ip,
                 "onu_port": c.onu_port,
+                "onu_port_detected": getattr(c, "onu_port_detected", 0) or 0,
                 "onu_info": c.onu_info,
                 "router_ip": c.router_ip,
                 "router_port": c.router_port,
@@ -679,6 +693,64 @@ def api_logs_clear(db: Session = Depends(get_db)):
     n = db.query(ActivityLog).delete()
     db.commit()
     return {"ok": True, "deleted": n}
+
+
+def _detik_sejak(dt) -> float:
+    """Usia datetime dalam detik (None = sangat lama)."""
+    if not dt:
+        return float("inf")
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - dt).total_seconds()
+
+
+def _ip_valid(teks: str) -> str:
+    try:
+        return str(ipaddress.ip_address((teks or "").strip()))
+    except ValueError:
+        return ""
+
+
+@router.post("/api/onu/port")
+async def api_onu_port(payload: OnuPortIn, db: Session = Depends(get_db)):
+    """Tentukan port web perangkat pelanggan untuk tombol Remote.
+
+    Aturan:
+    - port tersimpan (angka != 0) dipakai kalau TCP-nya terbuka;
+    - port 0/kosong, atau port tersimpan yang tertutup, diarahkan ke deteksi
+      otomatis (cache TTL dulu, lalu probe 80/8080/8000);
+    - hasil probe disimpan sebagai cache dan TIDAK menimpa port pilihan teknisi.
+    """
+    cust = _need_customer(db, payload)
+    ip = (_ip_valid(payload.ip) or cust.onu_ip or cust.ip or "").strip()
+    if not ip:
+        raise HTTPException(400, "IP pelanggan belum diketahui (pelanggan offline?)")
+
+    configured = int(cust.onu_port or 0)
+    cached = int(getattr(cust, "onu_port_detected", 0) or 0)
+    checked = getattr(cust, "onu_port_checked_at", None)
+    segar = bool(cached) and _detik_sejak(checked) < settings.onu_port_cache_ttl
+
+    if configured and not payload.refresh:
+        if await onu.port_open(ip, configured):
+            return {"ok": True, "ip": ip, "port": configured,
+                    "source": "config", "tried": [configured]}
+
+    if segar and not payload.refresh:
+        return {"ok": True, "ip": ip, "port": cached,
+                "source": "cache", "tried": [cached]}
+
+    hasil = await onu.detect_port(ip, configured)
+    if hasil["open"]:
+        cust.onu_port_detected = int(hasil["port"])
+        cust.onu_port_checked_at = datetime.now(timezone.utc)
+        db.commit()
+        return {"ok": True, "ip": ip, "port": hasil["port"], "source": "probe",
+                "tried": hasil["tried"], "ms": hasil["ms"]}
+
+    cadangan = configured or cached or settings.onu_default_port
+    return {"ok": False, "ip": ip, "port": cadangan, "source": "default",
+            "tried": hasil["tried"], "ms": hasil["ms"]}
 
 
 @router.get("/api/onu/cek")

@@ -113,7 +113,8 @@ class Session:
     disabled: bool = False
     is_paid: bool | None = None
     onu_ip: str = ""
-    onu_port: int = 80
+    onu_port: int = 0            # 0 = deteksi otomatis
+    onu_port_detected: int = 0   # cache hasil deteksi
     router_ip: str = ""
     router_port: int = 80
     onu_info: str = ""
@@ -344,7 +345,8 @@ async def build_snapshot(router: Router, db: Session) -> Snapshot:
             disabled=secret.disabled,
             is_paid=is_paid,
             onu_ip=cust.onu_ip if cust else "",
-            onu_port=(cust.onu_port or settings.onu_default_port) if cust else settings.onu_default_port,
+            onu_port=(cust.onu_port if cust else settings.onu_default_port),
+            onu_port_detected=(cust.onu_port_detected or 0) if cust else 0,
             router_ip=(cust.router_ip or router.manage_ip or router.host) if cust else (router.manage_ip or router.host),
             router_port=(cust.router_port or settings.manage_port) if cust else settings.manage_port,
             onu_info=cust.onu_info if cust else "",
@@ -400,7 +402,8 @@ async def build_snapshot(router: Router, db: Session) -> Snapshot:
                 disabled=False,
                 is_paid=None,
                 onu_ip=cust.onu_ip if cust else "",
-                onu_port=(cust.onu_port or settings.onu_default_port) if cust else settings.onu_default_port,
+                onu_port=(cust.onu_port if cust else settings.onu_default_port),
+                onu_port_detected=(cust.onu_port_detected or 0) if cust else 0,
                 router_ip=(cust.router_ip or router.manage_ip or router.host) if cust else (router.manage_ip or router.host),
                 router_port=(cust.router_port or settings.manage_port) if cust else settings.manage_port,
                 onu_info=cust.onu_info if cust else "",

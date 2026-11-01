@@ -293,7 +293,13 @@ if (document.getElementById('tabel')) {
     tombol.appendChild(el('button', { class: 'btn mini', onclick: () => ping(s, routerId) }, 'Ping dari mikrotik'));
     tombol.appendChild(el('button', { class: 'btn mini', onclick: () => remoteOnu(s, routerId) }, 'Remote ONU'));
     if (s.ip) {
-      tombol.appendChild(el('button', { class: 'btn mini', onclick: () => window.open(`/proxy/${routerId}/http/${s.ip}:${s.onu_port || 80}/`, '_blank') }, 'ONU via server'));
+      tombol.appendChild(el('button', {
+        class: 'btn mini',
+        onclick: async () => {
+          const port = await resolveOnuPort(s);
+          window.open(`/proxy/${routerId}/http/${s.ip}:${port}/`, '_blank');
+        },
+      }, 'ONU via server'));
     }
     if (state.role === 'admin' && s.customer_id) {
       tombol.appendChild(el('button', {
@@ -314,9 +320,28 @@ if (document.getElementById('tabel')) {
     bukaModal('#modalDetail');
   }
 
-  function remoteOnu(s, routerId) {
+  // Tentukan port web tujuan Remote ONU:
+  // pilihan teknisi (onu_port) > hasil deteksi otomatis (onu_port_detected)
+  // > fallback 80. Saat masih otomatis (0) dan belum ada cache deteksi,
+  // panggil /api/onu/port untuk mendeteksi (80/8080/8000) sebelum membuka.
+  async function resolveOnuPort(s) {
+    let port = parseInt(s.onu_port, 10) || 0;
+    if (!port && s.onu_port_detected) port = parseInt(s.onu_port_detected, 10) || 0;
+    if (!port) {
+      try {
+        const res = await api('/api/onu/port', { id: s.customer_id, ip: s.ip });
+        if (res.ok && res.port) port = parseInt(res.port, 10) || 0;
+      } catch (e) {
+        // deteksi gagal, gunakan fallback di bawah
+      }
+    }
+    return port || 80;
+  }
+
+  async function remoteOnu(s, routerId) {
     // pelanggan terbaca dapat IP 10.1.4.39 -> remote membuka 10.1.4.39:80
     if (!s.ip) return toast('IP pelanggan belum diketahui (pelanggan offline?)', 'err');
+    const port = await resolveOnuPort(s);
     if (location.protocol === 'https:') {
       // diakses lewat domain (HTTPS): buka ONU lewat subdomain wildcard
       // (onu-10-20-20-3.DOMAIN) supaya halaman ONU berperilaku alami
@@ -328,12 +353,11 @@ if (document.getElementById('tabel')) {
       } else if (parts.length >= 2) {
         domain = parts.slice(-2).join('.');
       }
-      const port = s.onu_port || 80;
       const host = 'onu-' + s.ip.split('.').join('-') + (port !== 80 ? '-' + port : '') + '.' + domain;
       window.open(`https://${host}/`, '_blank');
       return;
     }
-    window.open(`http://${s.ip}:${s.onu_port || 80}/`, '_blank');
+    window.open(`http://${s.ip}:${port}/`, '_blank');
   }
 
   async function ping(s, routerId) {
