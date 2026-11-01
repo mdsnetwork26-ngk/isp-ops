@@ -113,6 +113,14 @@ class Settings:
     onu_candidates: str = os.getenv(
         "ONU_CANDIDATES", "192.168.100.1,192.168.1.1,192.168.10.1"
     )
+    # Port web perangkat pelanggan yang dicoba saat port tersimpan 0/kosong
+    # (ONU umumnya 80, sebagian router memakai 8080/443). Urutan = prioritas.
+    onu_port_candidates: str = os.getenv(
+        "ONU_PORT_CANDIDATES", "80,8080,8000"
+    )
+    onu_port_timeout: float = float(os.getenv("ONU_PORT_TIMEOUT", "1.2"))
+    # Berapa detik hasil deteksi port dipakai ulang sebelum dicoba lagi.
+    onu_port_cache_ttl: int = _int("ONU_PORT_CACHE_TTL", 86400)
     onu_scan_timeout: float = float(os.getenv("ONU_SCAN_TIMEOUT", "0.6"))
     onu_scan_concurrency: int = _int("ONU_SCAN_CONCURRENCY", 32)
     onu_proxy_timeout: float = float(os.getenv("ONU_PROXY_TIMEOUT", "45"))
@@ -153,6 +161,18 @@ class Settings:
     @property
     def onu_candidate_list(self) -> list[str]:
         return [c.strip() for c in self.onu_candidates.split(",") if c.strip()]
+
+    @property
+    def onu_port_candidate_list(self) -> list[int]:
+        out: list[int] = []
+        for c in self.onu_port_candidates.split(","):
+            try:
+                port = int(c.strip())
+            except ValueError:
+                continue
+            if 0 < port < 65536 and port not in out:
+                out.append(port)
+        return out
 
 
 settings = Settings()

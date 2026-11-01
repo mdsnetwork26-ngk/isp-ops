@@ -81,6 +81,22 @@ def _migrate() -> None:
                 conn.execute(
                     text("ALTER TABLE customers ADD COLUMN auto_isolir_date DATE")
                 )
+        if "onu_port_detected" not in kolom_cust:
+            with engine.begin() as conn:
+                conn.execute(
+                    text("ALTER TABLE customers ADD COLUMN onu_port_detected INTEGER DEFAULT 0")
+                )
+                # 80 adalah default lama (semua perangkat dianggap port 80).
+                # Sekali saja: jadikan "otomatis" supaya router 8080 ikut terdeteksi.
+                if "onu_port" in kolom_cust:
+                    conn.execute(
+                        text("UPDATE customers SET onu_port=0 WHERE onu_port=80")
+                    )
+        if "onu_port_checked_at" not in kolom_cust:
+            with engine.begin() as conn:
+                conn.execute(
+                    text("ALTER TABLE customers ADD COLUMN onu_port_checked_at DATETIME")
+                )
 
     if "customers" not in tables:
         return

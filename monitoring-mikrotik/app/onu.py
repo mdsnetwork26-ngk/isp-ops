@@ -123,6 +123,59 @@ def _tcp_open(ip: str, port: int, timeout: float) -> bool:
         return False
 
 
+# --------------------------------------------------------------------------- deteksi port web
+
+
+def port_candidates(configured: int = 0) -> list[int]:
+    """Port yang dicoba untuk Remote ONU/router.
+
+    Port tersimpan (bila ada) selalu didahulukan, lalu kandidat dari
+    ONU_PORT_CANDIDATES (bawaan 80, 8080, 8000).
+    """
+    out: list[int] = []
+    if configured:
+        out.append(int(configured))
+    for port in settings.onu_port_candidate_list:
+        if port not in out:
+            out.append(port)
+    return out
+
+
+async def port_open(ip: str, port: int, timeout: float | None = None) -> bool:
+    """Cek satu port TCP tanpa menunggu lebih dari timeout detik."""
+    timeout = timeout or settings.onu_port_timeout
+    loop = asyncio.get_running_loop()
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(None, _tcp_open, ip, int(port), timeout),
+            timeout=timeout + 0.5,
+        )
+    except Exception:  # noqa: BLE001
+        return False
+
+
+async def detect_port(
+    ip: str,
+    configured: int = 0,
+    timeout: float | None = None,
+    candidates: list[int] | None = None,
+) -> dict:
+    """Cari port web yang terbuka. Semua kandidat dicoba paralel, lalu dipilih
+    yang paling awal menurut urutan prioritas (bukan yang tercepat menjawab)."""
+    daftar = list(candidates) if candidates else port_candidates(configured)
+    if not daftar:
+        return {"port": 0, "open": False, "tried": [], "ms": 0}
+    timeout = timeout or settings.onu_port_timeout
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    hasil = await asyncio.gather(*(port_open(ip, p, timeout) for p in daftar))
+    ms = int((loop.time() - started) * 1000)
+    for port, terbuka in zip(daftar, hasil):
+        if terbuka:
+            return {"port": port, "open": True, "tried": daftar, "ms": ms}
+    return {"port": 0, "open": False, "tried": daftar, "ms": ms}
+
+
 async def scan(
     ips: list[str],
     port: int,

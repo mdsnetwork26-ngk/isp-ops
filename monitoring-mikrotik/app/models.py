@@ -94,7 +94,13 @@ class Customer(Base):
 
     # ONU / router pelanggan
     onu_ip: Mapped[str] = mapped_column(String(60), default="")
-    onu_port: Mapped[int] = mapped_column(Integer, default=80)
+    # 0 = deteksi otomatis (80/8080/8000), angka lain = port tetap.
+    onu_port: Mapped[int] = mapped_column(Integer, default=0)
+    # hasil deteksi otomatis yang di-cache (dipakai ulang sampai TTL habis)
+    onu_port_detected: Mapped[int] = mapped_column(Integer, default=0)
+    onu_port_checked_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     onu_info: Mapped[str] = mapped_column(String(160), default="")
     router_ip: Mapped[str] = mapped_column(String(60), default="")
     router_port: Mapped[int] = mapped_column(Integer, default=80)
